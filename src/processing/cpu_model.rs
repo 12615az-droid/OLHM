@@ -58,7 +58,15 @@ fn child(id: String, kind: DeviceKind, name: String, metrics: Vec<Metric>) -> De
 }
 
 pub fn snapshot(root: &Device, data: CpuMetrics) -> MonitorSnapshot {
-    let mut metrics = vec![metric("usage", "Общая загрузка", Unit::Percent, data.usage)];
+    let mut metrics = vec![
+        metric("usage", "Общая загрузка", Unit::Percent, data.usage),
+        metric(
+            "throttling",
+            "Троттлинг за последний интервал",
+            Unit::Boolean,
+            data.throttling,
+        ),
+    ];
     if data.power.is_empty() {
         metrics.push(metric(
             "power",
@@ -111,12 +119,20 @@ pub fn snapshot(root: &Device, data: CpuMetrics) -> MonitorSnapshot {
                 "Температура CPU [{}; {}]",
                 temperature.source, temperature.label
             ),
-            vec![metric(
-                "temperature",
-                "Температура",
-                Unit::Celsius,
-                temperature.celsius,
-            )],
+            vec![
+                metric(
+                    "temperature",
+                    "Температура",
+                    Unit::Celsius,
+                    temperature.celsius,
+                ),
+                metric(
+                    "critical_temperature",
+                    "Критическая температура",
+                    Unit::Celsius,
+                    temperature.critical_celsius,
+                ),
+            ],
         ));
     }
     MonitorSnapshot {

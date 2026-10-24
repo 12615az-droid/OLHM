@@ -19,6 +19,8 @@ struct TemperatureSource {
     driver: String,
     channel: String,
     label: Option<String>,
+    critical: Result<String, InterfaceStatus>,
+    has_critical_alarm: bool,
 }
 
 #[derive(Debug)]
@@ -37,6 +39,7 @@ pub struct CpuMonitorCollector {
     temperatures: Vec<TemperatureSource>,
     power: Vec<PowerSource>,
     known_cpus: BTreeSet<u32>,
+    throttle_files: BTreeMap<u32, Vec<String>>,
     reader: DynamicReader,
 }
 
@@ -130,6 +133,8 @@ impl CpuMonitorCollector {
                     label: attrs
                         .get(&format!("{channel}_label"))
                         .map(|s| s.trim().to_owned()),
+                    critical: read(&path.join(format!("{channel}_crit"))),
+                    has_critical_alarm: path.join(format!("{channel}_crit_alarm")).exists(),
                     channel,
                 });
             }
@@ -152,6 +157,25 @@ impl CpuMonitorCollector {
                     has_power: path.join("power_uw").exists(),
                     max_energy_range_uj: read(&path.join("max_energy_range_uj")),
                 })
+            })
+            .collect();
+        let throttle_files = initial
+            .logical_cpus
+            .iter()
+            .filter_map(|cpu| {
+                let names = cpu
+                    .thermal_throttle
+                    .as_ref()?
+                    .keys()
+                    .filter(|name| {
+                        matches!(
+                            name.as_str(),
+                            "core_throttle_count" | "package_throttle_count"
+                        )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                (!names.is_empty()).then_some((cpu.id, names))
             })
             .collect();
         Self {
@@ -179,6 +203,7 @@ impl CpuMonitorCollector {
                         .copied(),
                 )
                 .collect(),
+            throttle_files,
             reader: DynamicReader::default(),
         }
     }
@@ -242,6 +267,18 @@ impl CpuMonitorCollector {
                     RawCpuSampleEntry {
                         online,
                         frequency_khz,
+                        throttle_counts: self
+                            .throttle_files
+                            .get(&id)
+                            .into_iter()
+                            .flatten()
+                            .map(|name| {
+                                (
+                                    name.clone(),
+                                    reader.read(&path.join("thermal_throttle").join(name), now),
+                                )
+                            })
+                            .collect(),
                     },
                 )
             })
@@ -257,6 +294,15 @@ impl CpuMonitorCollector {
                 label: source.label.clone(),
                 input: reader.read(&source.path.join(format!("{}_input", source.channel)), now),
                 fault: reader.read(&source.path.join(format!("{}_fault", source.channel)), now),
+                critical: source.critical.clone(),
+                critical_alarm: if source.has_critical_alarm {
+                    reader.read(
+                        &source.path.join(format!("{}_crit_alarm", source.channel)),
+                        now,
+                    )
+                } else {
+                    Err(InterfaceStatus::NotAvailable)
+                },
             })
             .collect();
         let power = self

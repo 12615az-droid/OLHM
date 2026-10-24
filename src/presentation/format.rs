@@ -3,12 +3,19 @@ use crate::model::{Metric, MetricValue, Unit};
 
 pub(super) fn metric(metric: &Metric) -> String {
     let unit = match metric.unit {
+        Unit::Boolean => "",
         Unit::Percent => "%",
         Unit::Megahertz => "МГц",
         Unit::Celsius => "°C",
         Unit::Watt => "Вт",
     };
     match metric.value {
+        MetricValue::Available(value) if metric.unit == Unit::Boolean && value == 0.0 => {
+            "нет".into()
+        }
+        MetricValue::Available(value) if metric.unit == Unit::Boolean && value == 1.0 => {
+            "да".into()
+        }
         MetricValue::Available(value) if value.is_finite() => format!("{value:.1} {unit}"),
         MetricValue::Available(_) | MetricValue::InvalidData => "некорректные данные".into(),
         MetricValue::Waiting => "ожидание второго замера".into(),

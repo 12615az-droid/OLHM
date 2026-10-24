@@ -68,12 +68,14 @@ pub struct CpuTemperature {
     pub source: String,
     pub label: String,
     pub celsius: CpuValue,
+    pub critical_celsius: CpuValue,
 }
 
 #[derive(Debug)]
 pub struct CpuMetrics {
     pub interval: Option<Duration>,
     pub usage: CpuValue,
+    pub throttling: CpuValue,
     pub cpus: BTreeMap<u32, CpuThreadMetrics>,
     pub temperatures: Vec<CpuTemperature>,
     pub power: Vec<CpuPower>,
@@ -179,6 +181,79 @@ fn temperature(raw: &RawCpuTemperature) -> CpuValue {
     }
 }
 
+fn millidegrees(raw: &Result<String, InterfaceStatus>) -> CpuValue {
+    match raw {
+        Ok(value) => match value.trim().parse::<i64>() {
+            Ok(milli) if (-273_150..=250_000).contains(&milli) => {
+                CpuValue::Available(milli as f64 / 1000.0)
+            }
+            _ => CpuValue::InvalidData,
+        },
+        Err(status) => failed(status),
+    }
+}
+
+fn throttling(sample: &RawCpuSample, previous: Option<&RawCpuSample>) -> CpuValue {
+    let mut has_source = false;
+    let mut comparable = false;
+    let mut fallback = None;
+    for temperature in sample
+        .temperatures
+        .iter()
+        .filter(|raw| supports_temperature(&raw.driver))
+    {
+        match unsigned(&temperature.critical_alarm) {
+            Ok(1) => return CpuValue::Available(1.0),
+            Ok(0) => {
+                has_source = true;
+                comparable = true;
+            }
+            Ok(_) => fallback = Some(CpuValue::InvalidData),
+            Err(CpuValue::NotAvailable) => {}
+            Err(reason) => fallback = Some(reason),
+        }
+    }
+    for (&cpu_id, cpu) in &sample.cpus {
+        for (name, current) in &cpu.throttle_counts {
+            has_source = true;
+            let current = match unsigned(current) {
+                Ok(value) => value,
+                Err(reason) => {
+                    fallback = Some(reason);
+                    continue;
+                }
+            };
+            let Some(old) = previous
+                .and_then(|sample| sample.cpus.get(&cpu_id))
+                .and_then(|cpu| cpu.throttle_counts.get(name))
+            else {
+                continue;
+            };
+            let old = match unsigned(old) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if current > old {
+                return CpuValue::Available(1.0);
+            }
+            if current < old {
+                fallback = Some(CpuValue::CounterReset);
+                continue;
+            }
+            comparable = true;
+        }
+    }
+    if let Some(reason) = fallback {
+        reason
+    } else if comparable {
+        CpuValue::Available(0.0)
+    } else if has_source {
+        CpuValue::Waiting
+    } else {
+        CpuValue::NotSupported
+    }
+}
+
 #[derive(Default)]
 pub struct CpuMonitor {
     previous: Option<RawCpuSample>,
@@ -274,6 +349,7 @@ impl CpuMonitor {
                     source: format!("{} / {}", raw.driver, raw.device),
                     label,
                     celsius: temperature(raw),
+                    critical_celsius: millidegrees(&raw.critical),
                 }
             })
             .collect();
@@ -298,6 +374,7 @@ impl CpuMonitor {
         let metrics = CpuMetrics {
             interval,
             usage: overall,
+            throttling: throttling(&sample, previous),
             cpus,
             temperatures,
             power,
@@ -334,6 +411,7 @@ mod tests {
                 RawCpuSampleEntry {
                     online: Some(true),
                     frequency_khz: Ok("4200000\n".into()),
+                    throttle_counts: BTreeMap::new(),
                 },
             )]),
             temperatures: Vec::new(),
@@ -443,6 +521,8 @@ mod tests {
             label: Some(label.into()),
             input,
             fault: Err(InterfaceStatus::NotAvailable),
+            critical: Err(InterfaceStatus::NotAvailable),
+            critical_alarm: Err(InterfaceStatus::NotAvailable),
         }
     }
 
@@ -462,6 +542,10 @@ mod tests {
         let metrics = CpuMonitor::default().update(raw);
         assert_eq!(metrics.temperatures.len(), 3);
         assert_eq!(metrics.temperatures[0].celsius, CpuValue::Available(42.5));
+        assert_eq!(
+            metrics.temperatures[0].critical_celsius,
+            CpuValue::NotAvailable
+        );
         assert!(metrics.temperatures[1].label.contains("управляющее"));
         assert_eq!(metrics.temperatures[2].celsius, CpuValue::PermissionDenied);
         let mut bad = sensor("coretemp", "Package id 0", Ok("999999".into()));
@@ -475,6 +559,64 @@ mod tests {
         assert_eq!(
             frequency(&Err(InterfaceStatus::NotAvailable)),
             CpuValue::NotAvailable
+        );
+    }
+
+    #[test]
+    fn throttling_uses_alarm_or_counter_delta_without_treating_history_as_active() {
+        let at = Instant::now();
+        let mut monitor = CpuMonitor::default();
+        let mut first = sample(at, 0, 100);
+        first
+            .cpus
+            .get_mut(&7)
+            .unwrap()
+            .throttle_counts
+            .insert("core_throttle_count".into(), Ok("12\n".into()));
+        let mut temperature = sensor("coretemp", "Package id 0", Ok("80000".into()));
+        temperature.critical = Ok("100000\n".into());
+        temperature.critical_alarm = Err(InterfaceStatus::NotAvailable);
+        first.temperatures.push(temperature);
+        let metrics = monitor.update(first);
+        assert_eq!(metrics.throttling, CpuValue::Waiting);
+        assert_eq!(
+            metrics.temperatures[0].critical_celsius,
+            CpuValue::Available(100.0)
+        );
+
+        let mut unchanged = sample(at + Duration::from_secs(1), 10, 190);
+        unchanged
+            .cpus
+            .get_mut(&7)
+            .unwrap()
+            .throttle_counts
+            .insert("core_throttle_count".into(), Ok("12\n".into()));
+        assert_eq!(
+            monitor.update(unchanged).throttling,
+            CpuValue::Available(0.0)
+        );
+
+        let mut increased = sample(at + Duration::from_secs(2), 20, 280);
+        increased
+            .cpus
+            .get_mut(&7)
+            .unwrap()
+            .throttle_counts
+            .insert("core_throttle_count".into(), Ok("13\n".into()));
+        assert_eq!(
+            monitor.update(increased).throttling,
+            CpuValue::Available(1.0)
+        );
+
+        let mut alarm = sample(at + Duration::from_secs(3), 30, 370);
+        let mut temperature = sensor("coretemp", "Package id 0", Ok("101000".into()));
+        temperature.critical_alarm = Ok("1\n".into());
+        alarm.temperatures.push(temperature);
+        assert_eq!(monitor.update(alarm).throttling, CpuValue::Available(1.0));
+
+        assert_eq!(
+            CpuMonitor::default().update(sample(at, 0, 0)).throttling,
+            CpuValue::NotSupported
         );
     }
 

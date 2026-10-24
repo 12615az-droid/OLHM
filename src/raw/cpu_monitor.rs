@@ -15,6 +15,7 @@ pub struct RawCpuSample {
 pub struct RawCpuSampleEntry {
     pub online: Option<bool>,
     pub frequency_khz: Result<String, InterfaceStatus>,
+    pub throttle_counts: BTreeMap<String, Result<String, InterfaceStatus>>,
 }
 
 #[derive(Debug)]
@@ -26,6 +27,8 @@ pub struct RawCpuTemperature {
     pub label: Option<String>,
     pub input: Result<String, InterfaceStatus>,
     pub fault: Result<String, InterfaceStatus>,
+    pub critical: Result<String, InterfaceStatus>,
+    pub critical_alarm: Result<String, InterfaceStatus>,
 }
 
 /// Powercap data retains the zone's identity; Processing decides which domains

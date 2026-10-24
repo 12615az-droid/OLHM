@@ -114,5 +114,10 @@ mod tests {
         assert_eq!(metric(value), "недоступно");
         value.value = MetricValue::Available(0.0);
         assert_eq!(metric(value), "0.0 Вт");
+        value.unit = Unit::Boolean;
+        value.value = MetricValue::Available(0.0);
+        assert_eq!(metric(value), "нет");
+        value.value = MetricValue::Available(1.0);
+        assert_eq!(metric(value), "да");
     }
 }

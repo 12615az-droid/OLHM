@@ -275,9 +275,12 @@ mod tests {
         fixture.write("proc/stat", "cpu 10 0 10 80\ncpu0 10 0 10 80\n");
         fixture.write("cpu/online", "0\n");
         fixture.write("cpu/cpu0/cpufreq/scaling_cur_freq", "4200000\n");
+        fixture.write("cpu/cpu0/thermal_throttle/core_throttle_count", "7\n");
         fixture.write("hwmon/hwmon3/name", "k10temp\n");
         fixture.write("hwmon/hwmon3/temp1_label", "Tctl\n");
         fixture.write("hwmon/hwmon3/temp1_input", "45000\n");
+        fixture.write("hwmon/hwmon3/temp1_crit", "95000\n");
+        fixture.write("hwmon/hwmon3/temp1_crit_alarm", "0\n");
         let initial = fixture.collect_with_classes().unwrap();
         let collector = CpuCollector::with_roots(fixture.0.join("proc"), fixture.0.join("cpu"));
         let mut sampler = collector.monitor(&initial);
@@ -287,10 +290,27 @@ mod tests {
             "4200000\n"
         );
         assert_eq!(first.temperatures[0].input.as_deref().unwrap(), "45000\n");
+        assert_eq!(
+            first.temperatures[0].critical.as_deref().unwrap(),
+            "95000\n"
+        );
+        assert_eq!(
+            first.temperatures[0].critical_alarm.as_deref().unwrap(),
+            "0\n"
+        );
+        assert_eq!(
+            first.cpus[&0].throttle_counts["core_throttle_count"]
+                .as_deref()
+                .unwrap(),
+            "7\n"
+        );
         fixture.write("proc/cpuinfo", "broken static data");
         fixture.write("hwmon/hwmon3/name", "changed identity");
         fixture.write("hwmon/hwmon3/temp1_label", "changed label");
         fixture.write("hwmon/hwmon3/temp1_input", "47000\n");
+        fixture.write("hwmon/hwmon3/temp1_crit", "99000\n");
+        fixture.write("hwmon/hwmon3/temp1_crit_alarm", "1\n");
+        fixture.write("cpu/cpu0/thermal_throttle/core_throttle_count", "8\n");
         fixture.write("cpu/cpu0/cpufreq/scaling_cur_freq", "3800000\n");
         fixture.write("proc/stat", "cpu 20 0 20 160\ncpu0 20 0 20 160\n");
         let second = sampler.sample();
@@ -305,6 +325,20 @@ mod tests {
         assert_eq!(second.temperatures[0].driver, "k10temp");
         assert_eq!(second.temperatures[0].label.as_deref(), Some("Tctl"));
         assert_eq!(second.temperatures[0].input.as_deref().unwrap(), "47000\n");
+        assert_eq!(
+            second.temperatures[0].critical.as_deref().unwrap(),
+            "95000\n"
+        );
+        assert_eq!(
+            second.temperatures[0].critical_alarm.as_deref().unwrap(),
+            "1\n"
+        );
+        assert_eq!(
+            second.cpus[&0].throttle_counts["core_throttle_count"]
+                .as_deref()
+                .unwrap(),
+            "8\n"
+        );
         std::fs::remove_file(fixture.0.join("hwmon/hwmon3/temp1_input")).unwrap();
         fixture.write("proc/stat", "malformed");
         let missing = sampler.sample();

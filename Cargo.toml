@@ -1,0 +1,13 @@
+[package]
+name = "olhm"
+version = "0.4.0"
+edition = "2024"
+
+[features]
+default = []
+gui = ["dep:eframe"]
+
+[dependencies]
+eframe = { version = "0.33.3", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -76,6 +76,8 @@ pub struct CpuMetrics {
     pub interval: Option<Duration>,
     pub usage: CpuValue,
     pub throttling: CpuValue,
+    /// A critical temperature alarm may be latched; it is not throttle status.
+    pub critical_alarm: CpuValue,
     pub cpus: BTreeMap<u32, CpuThreadMetrics>,
     pub temperatures: Vec<CpuTemperature>,
     pub power: Vec<CpuPower>,
@@ -193,9 +195,8 @@ fn millidegrees(raw: &Result<String, InterfaceStatus>) -> CpuValue {
     }
 }
 
-fn throttling(sample: &RawCpuSample, previous: Option<&RawCpuSample>) -> CpuValue {
-    let mut has_source = false;
-    let mut comparable = false;
+fn critical_alarm(sample: &RawCpuSample) -> CpuValue {
+    let mut available = false;
     let mut fallback = None;
     for temperature in sample
         .temperatures
@@ -205,14 +206,30 @@ fn throttling(sample: &RawCpuSample, previous: Option<&RawCpuSample>) -> CpuValu
         match unsigned(&temperature.critical_alarm) {
             Ok(1) => return CpuValue::Available(1.0),
             Ok(0) => {
-                has_source = true;
-                comparable = true;
+                available = true;
             }
             Ok(_) => fallback = Some(CpuValue::InvalidData),
             Err(CpuValue::NotAvailable) => {}
             Err(reason) => fallback = Some(reason),
         }
     }
+    if let Some(reason) = fallback {
+        reason
+    } else if available {
+        CpuValue::Available(0.0)
+    } else {
+        CpuValue::NotSupported
+    }
+}
+
+/// Evidence recorded by the kernel, not an instantaneous throttle status.
+/// Counts report new episode starts; total time can also record an episode
+/// without a new start. Neither an unchanged count nor a latched hwmon alarm
+/// establishes whether a CPU is currently throttling.
+fn throttling(sample: &RawCpuSample, previous: Option<&RawCpuSample>) -> CpuValue {
+    let mut has_source = false;
+    let mut comparable = false;
+    let mut fallback = None;
     for (&cpu_id, cpu) in &sample.cpus {
         for (name, current) in &cpu.throttle_counts {
             has_source = true;
@@ -375,6 +392,7 @@ impl CpuMonitor {
             interval,
             usage: overall,
             throttling: throttling(&sample, previous),
+            critical_alarm: critical_alarm(&sample),
             cpus,
             temperatures,
             power,
@@ -563,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn throttling_uses_alarm_or_counter_delta_without_treating_history_as_active() {
+    fn throttling_uses_counter_delta_without_treating_history_as_active() {
         let at = Instant::now();
         let mut monitor = CpuMonitor::default();
         let mut first = sample(at, 0, 100);
@@ -612,12 +630,108 @@ mod tests {
         let mut temperature = sensor("coretemp", "Package id 0", Ok("101000".into()));
         temperature.critical_alarm = Ok("1\n".into());
         alarm.temperatures.push(temperature);
-        assert_eq!(monitor.update(alarm).throttling, CpuValue::Available(1.0));
+        let metrics = monitor.update(alarm);
+        assert_eq!(metrics.throttling, CpuValue::NotSupported);
+        assert_eq!(metrics.critical_alarm, CpuValue::Available(1.0));
 
         assert_eq!(
             CpuMonitor::default().update(sample(at, 0, 0)).throttling,
             CpuValue::NotSupported
         );
+    }
+
+    #[test]
+    fn critical_alarm_is_separate_from_throttling_even_when_latched_or_clear() {
+        let at = Instant::now();
+        let mut monitor = CpuMonitor::default();
+        for (index, alarm) in ["1", "1", "0"].into_iter().enumerate() {
+            let mut raw = sample(at + Duration::from_secs(index as u64), 0, 100);
+            let mut temperature = sensor("coretemp", "Core 0", Ok("40000".into()));
+            temperature.critical_alarm = Ok(alarm.into());
+            raw.temperatures.push(temperature);
+            let metrics = monitor.update(raw);
+            assert_eq!(metrics.throttling, CpuValue::NotSupported);
+            assert_eq!(
+                metrics.critical_alarm,
+                CpuValue::Available(if alarm == "1" { 1.0 } else { 0.0 })
+            );
+        }
+
+        for (alarm, expected) in [
+            (Ok("2".into()), CpuValue::InvalidData),
+            (
+                Err(InterfaceStatus::PermissionDenied("fixture".into())),
+                CpuValue::PermissionDenied,
+            ),
+            (Err(InterfaceStatus::NotAvailable), CpuValue::NotSupported),
+        ] {
+            let mut raw = sample(at, 0, 100);
+            let mut temperature = sensor("coretemp", "Core 0", Ok("40000".into()));
+            temperature.critical_alarm = alarm;
+            raw.temperatures.push(temperature);
+            let metrics = CpuMonitor::default().update(raw);
+            assert_eq!(metrics.critical_alarm, expected);
+            assert_eq!(metrics.throttling, CpuValue::NotSupported);
+        }
+    }
+
+    #[test]
+    fn recorded_throttle_time_detects_an_episode_without_a_new_start_and_rebaselines() {
+        let at = Instant::now();
+        for domain in ["core", "package"] {
+            let mut monitor = CpuMonitor::default();
+            for (index, (time, expected)) in [
+                ("1000", CpuValue::Waiting),
+                ("2000", CpuValue::Available(1.0)),
+                ("2000", CpuValue::Available(0.0)),
+                ("500", CpuValue::CounterReset),
+                ("600", CpuValue::Available(1.0)),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut raw = sample(at + Duration::from_secs(index as u64), 0, 100);
+                let counters = &mut raw.cpus.get_mut(&7).unwrap().throttle_counts;
+                counters.insert(format!("{domain}_throttle_count"), Ok("12".into()));
+                counters.insert(format!("{domain}_throttle_total_time_ms"), Ok(time.into()));
+                let mut temperature = sensor("coretemp", "Core 0", Ok("40000".into()));
+                temperature.critical_alarm = Ok("0".into());
+                raw.temperatures.push(temperature);
+                let metrics = monitor.update(raw);
+                assert_eq!(metrics.throttling, expected, "{domain}, sample {index}");
+                assert_eq!(metrics.critical_alarm, CpuValue::Available(0.0));
+            }
+        }
+    }
+
+    #[test]
+    fn throttle_time_errors_are_not_reported_as_no_recorded_activity() {
+        let at = Instant::now();
+        for (value, expected) in [
+            (Ok("invalid".into()), CpuValue::InvalidData),
+            (
+                Err(InterfaceStatus::PermissionDenied("fixture".into())),
+                CpuValue::PermissionDenied,
+            ),
+            (
+                Err(InterfaceStatus::ReadError("fixture".into())),
+                CpuValue::ReadError,
+            ),
+        ] {
+            let mut monitor = CpuMonitor::default();
+            let mut first = sample(at, 0, 100);
+            first.cpus.get_mut(&7).unwrap().throttle_counts = BTreeMap::from([
+                ("core_throttle_count".into(), Ok("12".into())),
+                ("core_throttle_total_time_ms".into(), Ok("1000".into())),
+            ]);
+            monitor.update(first);
+            let mut second = sample(at + Duration::from_secs(1), 0, 100);
+            second.cpus.get_mut(&7).unwrap().throttle_counts = BTreeMap::from([
+                ("core_throttle_count".into(), Ok("12".into())),
+                ("core_throttle_total_time_ms".into(), value),
+            ]);
+            assert_eq!(monitor.update(second).throttling, expected);
+        }
     }
 
     fn power_reading(at: Instant, value: Result<String, InterfaceStatus>) -> RawCpuPower {

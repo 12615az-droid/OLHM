@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const USAGE: &str = "Usage: olhm help\n       olhm gui [cpu] [--interval SECONDS]\n       olhm info cpu\n       olhm snapshot cpu [--interval SECONDS]\n       olhm monitor cpu [--interval SECONDS] [--count N]\n       olhm collect cpu [--format json|debug]\n\nhelp: display this help.\ngui: open the CPU window (requires a build with --features gui).\ninfo cpu: display static CPU information.\nsnapshot cpu: wait for two readings and display one CPU monitoring snapshot.\nmonitor cpu: live CPU usage, frequency, power and supported temperatures (Ctrl+C to stop).\n  --interval: 0.1 to 60 seconds, default 1.\n  --count: monitor frame count including the initial baseline; default unlimited.\nNo arguments: collect CPU and output JSON.";
+const USAGE: &str = "Usage: olhm help\n       olhm gui [cpu|ram|storage|gpu] [--interval SECONDS]\n       olhm info cpu|ram|storage|gpu\n       olhm snapshot cpu|ram|storage|gpu [--interval SECONDS]\n       olhm monitor cpu|ram|storage|gpu [--interval SECONDS] [--count N]\n       olhm collect cpu [--format json|debug]\n\nhelp: display this help.\ngui: open the CPU/RAM/storage/GPU window (requires a build with --features gui).\ninfo: display static information for the selected category.\nsnapshot: wait for two readings and display one monitoring snapshot.\nmonitor: live CPU, RAM/swap, storage or GPU monitoring (Ctrl+C to stop).\n  --interval: 0.1 to 60 seconds, default 1.\n  --count: monitor frame count including the initial counter baseline; default unlimited.\nNo arguments: collect CPU and output JSON.";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Command {
@@ -52,12 +52,20 @@ fn parse_args(args: &[String]) -> Result<Command, &'static str> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         ["help"] | ["--help"] | ["-h"] => Ok(Command::Help),
-        ["gui"] | ["gui", "cpu"] => Ok(Command::Gui {
+        ["gui"] => Ok(Command::Gui {
             target: "cpu".into(),
             interval: Duration::from_secs(1),
         }),
-        ["gui", "--interval", value] | ["gui", "cpu", "--interval", value] => Ok(Command::Gui {
+        ["gui", "--interval", value] => Ok(Command::Gui {
             target: "cpu".into(),
+            interval: parse_interval(value)?,
+        }),
+        ["gui", target] => Ok(Command::Gui {
+            target: parse_target(target)?,
+            interval: Duration::from_secs(1),
+        }),
+        ["gui", target, "--interval", value] => Ok(Command::Gui {
+            target: parse_target(target)?,
             interval: parse_interval(value)?,
         }),
         ["info", target] => Ok(Command::Info {
@@ -152,7 +160,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Command::Help => writeln!(output, "{USAGE}")?,
         Command::Info { target } => {
             let session = olhm::monitor::open(&target)?;
-            olhm::presentation::text::write_info(&mut output, session.device())?;
+            for device in session.info_devices() {
+                olhm::presentation::text::write_info(&mut output, &device)?;
+            }
         }
         Command::Snapshot { target, interval } => {
             let mut session = olhm::monitor::open(&target)?;
@@ -233,7 +243,7 @@ mod tests {
             );
         }
         for args in [
-            vec!["gui", "gpu"],
+            vec!["gui", "unknown"],
             vec!["gui", "cpu", "--interval", "0"],
             vec!["gui", "--interval", "NaN"],
             vec!["gui", "cpu", "--interval"],
@@ -268,7 +278,7 @@ mod tests {
         );
         for args in [
             vec!["collect", "gpu"],
-            vec!["info", "gpu"],
+            vec!["info", "unknown"],
             vec!["info", "cpu", "extra"],
             vec!["help", "extra"],
             vec!["collect", "cpu", "--format"],
@@ -277,6 +287,131 @@ mod tests {
         ] {
             assert!(parse(&args).is_err());
         }
+    }
+
+    #[test]
+    fn ram_commands_share_target_and_interval_validation() {
+        assert_eq!(
+            parse(&["info", "ram"]),
+            Ok(Command::Info {
+                target: "ram".into()
+            })
+        );
+        assert_eq!(
+            parse(&["gui", "ram"]),
+            Ok(Command::Gui {
+                target: "ram".into(),
+                interval: Duration::from_secs(1)
+            })
+        );
+        assert_eq!(
+            parse(&["gui", "ram", "--interval", "0.5"]),
+            Ok(Command::Gui {
+                target: "ram".into(),
+                interval: Duration::from_millis(500)
+            })
+        );
+        assert_eq!(
+            parse(&["snapshot", "ram", "--interval", "0.25"]),
+            Ok(Command::Snapshot {
+                target: "ram".into(),
+                interval: Duration::from_millis(250)
+            })
+        );
+        assert_eq!(
+            parse(&["monitor", "ram", "--count", "2"]),
+            Ok(Command::Monitor {
+                target: "ram".into(),
+                interval: Duration::from_secs(1),
+                count: Some(2)
+            })
+        );
+        for args in [
+            vec!["snapshot", "ram", "--interval", "NaN"],
+            vec!["gui", "ram", "--interval", "0"],
+            vec!["monitor", "ram", "--count", "0"],
+        ] {
+            assert!(parse(&args).is_err());
+        }
+    }
+
+    #[test]
+    fn gpu_commands_use_the_shared_parser_and_validate_options() {
+        assert_eq!(
+            parse(&["info", "gpu"]),
+            Ok(Command::Info {
+                target: "gpu".into()
+            })
+        );
+        assert_eq!(
+            parse(&["snapshot", "gpu", "--interval", "0.2"]),
+            Ok(Command::Snapshot {
+                target: "gpu".into(),
+                interval: Duration::from_millis(200)
+            })
+        );
+        assert_eq!(
+            parse(&["gui", "gpu"]),
+            Ok(Command::Gui {
+                target: "gpu".into(),
+                interval: Duration::from_secs(1)
+            })
+        );
+        assert_eq!(
+            parse(&["monitor", "gpu", "--count", "2"]),
+            Ok(Command::Monitor {
+                target: "gpu".into(),
+                interval: Duration::from_secs(1),
+                count: Some(2)
+            })
+        );
+        for args in [
+            vec!["snapshot", "gpu", "--interval", "0"],
+            vec!["monitor", "gpu", "--count", "0"],
+            vec!["collect", "gpu"],
+        ] {
+            assert!(parse(&args).is_err());
+        }
+    }
+
+    #[test]
+    fn storage_targets_work_in_cli_and_gui_without_changing_raw_cpu_export() {
+        assert_eq!(
+            parse(&["info", "storage"]),
+            Ok(Command::Info {
+                target: "storage".into()
+            })
+        );
+        assert_eq!(
+            parse(&["gui", "storage", "--interval", "0.5"]),
+            Ok(Command::Gui {
+                target: "storage".into(),
+                interval: Duration::from_millis(500)
+            })
+        );
+        assert_eq!(
+            parse(&["snapshot", "storage"]),
+            Ok(Command::Snapshot {
+                target: "storage".into(),
+                interval: Duration::from_secs(1)
+            })
+        );
+        assert_eq!(
+            parse(&["monitor", "storage", "--count", "2"]),
+            Ok(Command::Monitor {
+                target: "storage".into(),
+                interval: Duration::from_secs(1),
+                count: Some(2)
+            })
+        );
+        for args in [
+            vec!["monitor", "storage", "--count", "0"],
+            vec!["gui", "storage", "--interval", "NaN"],
+            vec!["collect", "storage"],
+        ] {
+            assert!(parse(&args).is_err());
+        }
+        assert_eq!(parse(&[]), Ok(Command::Collect { debug: false }));
     }
 
     #[test]
@@ -296,7 +431,7 @@ mod tests {
             })
         );
         for args in [
-            vec!["snapshot", "gpu"],
+            vec!["snapshot", "unknown"],
             vec!["snapshot", "cpu", "--interval"],
             vec!["snapshot", "cpu", "--interval", "0"],
             vec!["snapshot", "cpu", "--interval", "NaN"],

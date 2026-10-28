@@ -19,16 +19,31 @@ pub enum MetricValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Unit {
+    GigatransfersPerSecond,
+    Byte,
+    BytePerSecond,
+    Count,
     Boolean,
     Percent,
     Megahertz,
     Celsius,
     Watt,
+    Rpm,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceKind {
+    Graphics,
+    Gpu,
+    Storage,
+    BlockDevice,
+    Partition,
+    FileSystem,
+    Memory,
+    MemoryModule,
+    MemoryTemperature,
+    Swap,
     Cpu,
     LogicalCpu,
     TemperatureSensor,

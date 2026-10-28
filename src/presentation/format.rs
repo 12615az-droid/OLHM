@@ -3,13 +3,51 @@ use crate::model::{Metric, MetricValue, Unit};
 
 pub(super) fn metric(metric: &Metric) -> String {
     let unit = match metric.unit {
+        Unit::Byte => "B",
+        Unit::BytePerSecond => "B/s",
+        Unit::Count => "шт.",
+        Unit::GigatransfersPerSecond => "GT/s",
         Unit::Boolean => "",
         Unit::Percent => "%",
         Unit::Megahertz => "МГц",
         Unit::Celsius => "°C",
         Unit::Watt => "Вт",
+        Unit::Rpm => "об/мин",
     };
     match metric.value {
+        MetricValue::Available(value)
+            if matches!(metric.unit, Unit::Byte | Unit::BytePerSecond) =>
+        {
+            if !value.is_finite() || value < 0.0 {
+                return "некорректные данные".into();
+            }
+            for (suffix, factor) in [
+                ("TiB", 1024_f64.powi(4)),
+                ("GiB", 1024_f64.powi(3)),
+                ("MiB", 1024_f64.powi(2)),
+                ("KiB", 1024.0),
+            ] {
+                if value >= factor {
+                    return format!(
+                        "{:.2} {suffix}{}",
+                        value / factor,
+                        if metric.unit == Unit::BytePerSecond {
+                            "/s"
+                        } else {
+                            ""
+                        }
+                    );
+                }
+            }
+            format!("{value:.0} {unit}")
+        }
+        MetricValue::Available(value)
+            if matches!(metric.unit, Unit::Count | Unit::Rpm)
+                && value.is_finite()
+                && value >= 0.0 =>
+        {
+            format!("{value:.0} {unit}")
+        }
         MetricValue::Available(value) if metric.unit == Unit::Boolean && value == 0.0 => {
             "нет".into()
         }

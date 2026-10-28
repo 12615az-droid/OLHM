@@ -170,7 +170,10 @@ impl CpuMonitorCollector {
                     .filter(|name| {
                         matches!(
                             name.as_str(),
-                            "core_throttle_count" | "package_throttle_count"
+                            "core_throttle_count"
+                                | "package_throttle_count"
+                                | "core_throttle_total_time_ms"
+                                | "package_throttle_total_time_ms"
                         )
                     })
                     .cloned()

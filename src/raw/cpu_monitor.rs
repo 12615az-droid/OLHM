@@ -15,6 +15,7 @@ pub struct RawCpuSample {
 pub struct RawCpuSampleEntry {
     pub online: Option<bool>,
     pub frequency_khz: Result<String, InterfaceStatus>,
+    /// Event counts and accumulated thermal throttle time in milliseconds.
     pub throttle_counts: BTreeMap<String, Result<String, InterfaceStatus>>,
 }
 

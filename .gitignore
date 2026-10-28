@@ -2,3 +2,4 @@
 /result
 /snapshot.json
 /dist/popov@*
+/dist/*/

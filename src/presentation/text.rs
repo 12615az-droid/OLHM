@@ -119,5 +119,12 @@ mod tests {
         assert_eq!(metric(value), "нет");
         value.value = MetricValue::Available(1.0);
         assert_eq!(metric(value), "да");
+        value.unit = Unit::Byte;
+        value.value = MetricValue::Available(0.0);
+        assert_eq!(metric(value), "0 B");
+        value.value = MetricValue::Available(1024.0);
+        assert_eq!(metric(value), "1.00 KiB");
+        value.value = MetricValue::Available(-1.0);
+        assert_eq!(metric(value), "некорректные данные");
     }
 }

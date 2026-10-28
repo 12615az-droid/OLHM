@@ -276,6 +276,18 @@ mod tests {
         fixture.write("cpu/online", "0\n");
         fixture.write("cpu/cpu0/cpufreq/scaling_cur_freq", "4200000\n");
         fixture.write("cpu/cpu0/thermal_throttle/core_throttle_count", "7\n");
+        fixture.write(
+            "cpu/cpu0/thermal_throttle/core_throttle_total_time_ms",
+            "1000\n",
+        );
+        fixture.write(
+            "cpu/cpu0/thermal_throttle/package_throttle_total_time_ms",
+            "2000\n",
+        );
+        fixture.write(
+            "cpu/cpu0/thermal_throttle/core_throttle_max_time_ms",
+            "900\n",
+        );
         fixture.write("hwmon/hwmon3/name", "k10temp\n");
         fixture.write("hwmon/hwmon3/temp1_label", "Tctl\n");
         fixture.write("hwmon/hwmon3/temp1_input", "45000\n");
@@ -304,6 +316,23 @@ mod tests {
                 .unwrap(),
             "7\n"
         );
+        assert_eq!(
+            first.cpus[&0].throttle_counts["core_throttle_total_time_ms"]
+                .as_deref()
+                .unwrap(),
+            "1000\n"
+        );
+        assert_eq!(
+            first.cpus[&0].throttle_counts["package_throttle_total_time_ms"]
+                .as_deref()
+                .unwrap(),
+            "2000\n"
+        );
+        assert!(
+            !first.cpus[&0]
+                .throttle_counts
+                .contains_key("core_throttle_max_time_ms")
+        );
         fixture.write("proc/cpuinfo", "broken static data");
         fixture.write("hwmon/hwmon3/name", "changed identity");
         fixture.write("hwmon/hwmon3/temp1_label", "changed label");
@@ -311,6 +340,14 @@ mod tests {
         fixture.write("hwmon/hwmon3/temp1_crit", "99000\n");
         fixture.write("hwmon/hwmon3/temp1_crit_alarm", "1\n");
         fixture.write("cpu/cpu0/thermal_throttle/core_throttle_count", "8\n");
+        fixture.write(
+            "cpu/cpu0/thermal_throttle/core_throttle_total_time_ms",
+            "1500\n",
+        );
+        fixture.write(
+            "cpu/cpu0/thermal_throttle/package_throttle_total_time_ms",
+            "2500\n",
+        );
         fixture.write("cpu/cpu0/cpufreq/scaling_cur_freq", "3800000\n");
         fixture.write("proc/stat", "cpu 20 0 20 160\ncpu0 20 0 20 160\n");
         let second = sampler.sample();
@@ -338,6 +375,18 @@ mod tests {
                 .as_deref()
                 .unwrap(),
             "8\n"
+        );
+        assert_eq!(
+            second.cpus[&0].throttle_counts["core_throttle_total_time_ms"]
+                .as_deref()
+                .unwrap(),
+            "1500\n"
+        );
+        assert_eq!(
+            second.cpus[&0].throttle_counts["package_throttle_total_time_ms"]
+                .as_deref()
+                .unwrap(),
+            "2500\n"
         );
         std::fs::remove_file(fixture.0.join("hwmon/hwmon3/temp1_input")).unwrap();
         fixture.write("proc/stat", "malformed");

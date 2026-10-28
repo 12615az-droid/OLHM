@@ -62,9 +62,15 @@ pub fn snapshot(root: &Device, data: CpuMetrics) -> MonitorSnapshot {
         metric("usage", "Общая загрузка", Unit::Percent, data.usage),
         metric(
             "throttling",
-            "Троттлинг за последний интервал",
+            "Тепловой троттлинг: новые события/учтённое время за интервал",
             Unit::Boolean,
             data.throttling,
+        ),
+        metric(
+            "critical_alarm",
+            "Критическая температурная тревога (может быть сохранённой)",
+            Unit::Boolean,
+            data.critical_alarm,
         ),
     ];
     if data.power.is_empty() {
